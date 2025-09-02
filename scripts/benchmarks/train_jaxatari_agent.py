@@ -16,7 +16,7 @@ from functools import partial
 
 import jaxatari
 from jaxatari.wrappers import AtariWrapper, FlattenObservationWrapper, ObjectCentricWrapper, PixelAndObjectCentricWrapper
-import jaxatari.games.jax_pong as jax_pong
+import jaxatari.games.jax_amidar as jax_amidar
 import jaxatari.spaces as spaces
 
 
@@ -187,9 +187,9 @@ def train_ppo_with_jaxatari(config: Dict[str, Any]):
 
     game_name = config["ENV_NAME_JAXATARI"] 
 
-    if game_name != "pong":
-        # TODO: change the core to support other games
-        raise ValueError(f"Game {game_name} is not supported for PPO training right now.")
+    # if game_name != "pong":
+    #     # TODO: change the core to support other games
+    #     raise ValueError(f"Game {game_name} is not supported for PPO training right now.")
 
     buffer_window = config["BUFFER_WINDOW"]
     

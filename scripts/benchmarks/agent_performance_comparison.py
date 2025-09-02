@@ -26,8 +26,8 @@ try:
         normalize_observation_jaxatari
     )
 
-    from jaxatari.games.jax_pong import JaxPong
-    from jaxatari.games.jax_pong import PongRenderer as JaxPongRenderer
+    from jaxatari.games.jax_amidar import JaxAmidar
+    from jaxatari.games.jax_amidar import AmidarRenderer as JaxAmidarRenderer
     from jaxatari.wrappers import AtariWrapper, FlattenObservationWrapper
     import jaxatari.rendering.jax_rendering_utils as jax_rendering_utils
 
@@ -60,10 +60,10 @@ else:
 
 # --- PPO Configuration (aligns with keys used in the new agent script) ---
 ppo_config_distrax = {
-    "ENV_NAME_OCATARI": "Pong", # Specific key for OCAtari env name
-    "ENV_NAME_JAXATARI": "pong", # Specific key for JAXAtari env name
-    "ENV_TYPE": "ocatari", # Can be "ocatari" or "jaxatari"
-    "TOTAL_TIMESTEPS": 20_000_000,
+    "ENV_NAME_OCATARI": "Amidar", # Specific key for OCAtari env name
+    "ENV_NAME_JAXATARI": "amidar", # Specific key for JAXAtari env name
+    "ENV_TYPE": "jaxatari", # Can be "ocatari" or "jaxatari"
+    "TOTAL_TIMESTEPS": 1_000_000,
     "TOTAL_TIMESTEPS_PER_EPOCH": 10_000,
     "LR": 5e-4,               # Learning rate
     "NUM_ENVS": 128,              # Number of parallel environments
@@ -94,7 +94,7 @@ ppo_config_distrax = {
 
 def train_ppo_agent_ocatari(config_dict: Dict[str, Any]) -> Tuple[TrainState, str, Dict[str, Any]]:
     env_type = config_dict.get("ENV_TYPE", "ocatari")
-    env_name = config_dict["ENV_NAME_OCATARI"] if env_type == "ocatari" else "Pong"
+    env_name = config_dict["ENV_NAME_OCATARI"] if env_type == "ocatari" else "Amidar"
     
     print(f"Training PPO agent (Distrax base) with {env_type.upper()} environment (Game: {env_name})...")
     
@@ -132,7 +132,7 @@ def train_ppo_agent_ocatari(config_dict: Dict[str, Any]) -> Tuple[TrainState, st
 
 def train_ppo_agent_jaxatari(config_dict: Dict[str, Any]) -> Tuple[TrainState, str, Dict[str, Any]]:
     env_type = config_dict.get("ENV_TYPE", "jaxatari")
-    env_name = config_dict["ENV_NAME_JAXATARI"] if env_type == "jaxatari" else "Pong"
+    env_name = config_dict["ENV_NAME_JAXATARI"] if env_type == "jaxatari" else "Amidar"
 
     print(f"Training PPO agent (Distrax base) with {env_type.upper()} environment (Game: {env_name})...")
     
@@ -200,7 +200,7 @@ def evaluate_ppo_agent(
         eval_env_type: Override environment type for evaluation ("ocatari" or "jax")
     """
     env_type = eval_env_type if eval_env_type is not None else config_dict.get("ENV_TYPE", "ocatari")
-    env_name = config_dict["ENV_NAME_OCATARI"] if env_type == "ocatari" else "Pong"
+    env_name = config_dict["ENV_NAME_OCATARI"] if env_type == "ocatari" else "Amidar"
     
     if config_dict.get("BUFFER_WINDOW", None) is None: # fix for old configs
         config_dict["BUFFER_WINDOW"] = config_dict["OCATARI_BUFFER_WINDOW"] 
@@ -395,7 +395,7 @@ def visualize_agent(agent_path: str, config_dict: Dict[str, Any], num_episodes: 
         num_episodes: Number of episodes to visualize
     """
     env_type = config_dict.get("ENV_TYPE", "ocatari")
-    env_name = config_dict["ENV_NAME_OCATARI"] if env_type == "ocatari" else "Pong"
+    env_name = config_dict["ENV_NAME_OCATARI"] if env_type == "ocatari" else "Amidar"
     
     if config_dict.get("BUFFER_WINDOW", None) is None: # fix for old configs
         config_dict["BUFFER_WINDOW"] = config_dict["OCATARI_BUFFER_WINDOW"] 
