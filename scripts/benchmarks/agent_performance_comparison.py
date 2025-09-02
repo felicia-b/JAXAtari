@@ -7,7 +7,6 @@ faulthandler.enable()
 import jax
 import jax.numpy as jnp
 import numpy as np
-from ocatari.core import OCAtari
 
 try:
     from train_ocatari_agent import (
