@@ -9,10 +9,6 @@ import jax.numpy as jnp
 import numpy as np
 
 try:
-    from train_ocatari_agent import (
-        train_ppo_with_ocatari, 
-        normalize_observation_ocatari 
-    )
 
     from ppo_agent import (
         create_ppo_train_state,
@@ -91,42 +87,6 @@ ppo_config_distrax = {
     "SAVE_VIZ_VIDEO": True,
 }
 
-def train_ppo_agent_ocatari(config_dict: Dict[str, Any]) -> Tuple[TrainState, str, Dict[str, Any]]:
-    env_type = config_dict.get("ENV_TYPE", "ocatari")
-    env_name = config_dict["ENV_NAME_OCATARI"] if env_type == "ocatari" else "Amidar"
-    
-    print(f"Training PPO agent (Distrax base) with {env_type.upper()} environment (Game: {env_name})...")
-    
-    trained_ppo_state, training_metrics = train_ppo_with_ocatari(config_dict)
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_dir = f"results/ppo_distrax_{env_type}_{env_name}_{timestamp}"
-    os.makedirs(results_dir, exist_ok=True)
-
-    # Save model parameters
-    model_params_path = os.path.join(results_dir, "ppo_distrax_model_params.npz")
-    params_dict_to_save = flax.serialization.to_state_dict(trained_ppo_state.params)
-    np.savez(model_params_path, **params_dict_to_save)
-    print(f"PPO (Distrax) model parameters saved to {model_params_path}")
-    
-    # Save metrics as both npz and csv
-    metrics_path_npz = os.path.join(results_dir, "training_metrics_ppo_distrax.npz")
-    np.savez(metrics_path_npz, **training_metrics)
-    print(f"Training metrics saved to {metrics_path_npz}")
-    
-    # Save metrics as CSV for easier comparison
-    metrics_df = pd.DataFrame({
-        'timesteps': training_metrics['timesteps'],
-        'mean_rewards': training_metrics['mean_rewards'],
-        'pg_losses': training_metrics['pg_losses'],
-        'vf_losses': training_metrics['vf_losses'],
-        'ent_losses': training_metrics['ent_losses']
-    })
-    metrics_path_csv = os.path.join(results_dir, "training_metrics_ppo_distrax.csv")
-    metrics_df.to_csv(metrics_path_csv, index=False)
-    print(f"Training metrics saved to {metrics_path_csv}")
-
-    return trained_ppo_state, results_dir, training_metrics
 
 
 def train_ppo_agent_jaxatari(config_dict: Dict[str, Any]) -> Tuple[TrainState, str, Dict[str, Any]]:
@@ -204,22 +164,11 @@ def evaluate_ppo_agent(
     if config_dict.get("BUFFER_WINDOW", None) is None: # fix for old configs
         config_dict["BUFFER_WINDOW"] = config_dict["OCATARI_BUFFER_WINDOW"] 
 
-    if env_type == "ocatari":
-        eval_env = OCAtari(
-            env_name=env_name,
-            mode="ram", 
-            hud=False, 
-            render_mode="rgb_array",
-            obs_mode="obj", 
-            buffer_window_size=config_dict["BUFFER_WINDOW"],
-            frameskip=config_dict["FRAMESKIP"],
-            repeat_action_probability=config_dict["REPEAT_ACTION_PROBABILITY"]
-        )
-    else:  # JAX environment
-        eval_env_base = jaxatari.make(env_name.lower())
-        eval_env = AtariWrapper(eval_env_base, sticky_actions=True, frame_stack_size=config_dict["BUFFER_WINDOW"], frame_skip=config_dict["FRAMESKIP"])
-        eval_env = ObjectCentricWrapper(eval_env)
-        eval_env = FlattenObservationWrapper(eval_env)
+     # JAX environment
+    eval_env_base = jaxatari.make(env_name.lower())
+    eval_env = AtariWrapper(eval_env_base, sticky_actions=True, frame_stack_size=config_dict["BUFFER_WINDOW"], frame_skip=config_dict["FRAMESKIP"])
+    eval_env = ObjectCentricWrapper(eval_env)
+    eval_env = FlattenObservationWrapper(eval_env)
 
     episode_rewards = []
     
@@ -252,7 +201,7 @@ def evaluate_ppo_agent(
     for episode in tqdm(range(num_episodes), desc="Evaluating Episodes", unit="ep"):
         if env_type == "ocatari":
             obs_stacked, _ = eval_env.reset(seed=eval_seed + episode)
-            obs_norm_flat = normalize_observation_ocatari(obs_stacked).reshape(1, -1)
+            #obs_norm_flat = normalize_observation_ocatari(obs_stacked).reshape(1, -1)
         else:
             obs, state = eval_env.reset(key=jax.random.PRNGKey(eval_seed + episode))
             obs_norm_flat = normalize_observation_jaxatari(obs, eval_env.observation_space()).reshape(1, -1)
@@ -268,7 +217,7 @@ def evaluate_ppo_agent(
 
             if env_type == "ocatari":
                 next_obs_stacked, reward, terminated, truncated, _ = eval_env.step(action_agent)
-                next_obs_norm_flat = normalize_observation_ocatari(next_obs_stacked).reshape(1, -1)
+                #next_obs_norm_flat = normalize_observation_ocatari(next_obs_stacked).reshape(1, -1)
                 done = terminated or truncated
             else:
                 next_obs, state, reward, done, _ = eval_env.step(state, action_agent)
@@ -424,18 +373,19 @@ def visualize_agent(agent_path: str, config_dict: Dict[str, Any], num_episodes: 
     
     # Initialize environment
     if env_type == "ocatari":
-        vis_env = OCAtari(
-            env_name=env_name,
-            mode="ram", 
-            hud=False, 
-            render_mode="rgb_array",
-            obs_mode="obj", 
-            buffer_window_size=config_dict["BUFFER_WINDOW"],
-            frameskip=config_dict["FRAMESKIP"],
-            repeat_action_probability=config_dict["REPEAT_ACTION_PROBABILITY"]
-        )
-        obs_shape_flat = (np.prod(vis_env.observation_space.shape),)
-        action_dim = vis_env.action_space.n
+        pass
+        #vis_env = OCAtari(
+        #     env_name=env_name,
+        #     mode="ram", 
+        #     hud=False, 
+        #     render_mode="rgb_array",
+        #     obs_mode="obj", 
+        #     buffer_window_size=config_dict["BUFFER_WINDOW"],
+        #     frameskip=config_dict["FRAMESKIP"],
+        #     repeat_action_probability=config_dict["REPEAT_ACTION_PROBABILITY"]
+        # )
+        # obs_shape_flat = (np.prod(vis_env.observation_space.shape),)
+        # action_dim = vis_env.action_space.n
     else:  # JAX environment
         vis_env_base = jaxatari.make(env_name.lower())
         vis_env = AtariWrapper(vis_env_base, sticky_actions=True, frame_stack_size=config_dict["BUFFER_WINDOW"], frame_skip=config_dict["FRAMESKIP"])
@@ -455,7 +405,7 @@ def visualize_agent(agent_path: str, config_dict: Dict[str, Any], num_episodes: 
     if env_type == "ocatari":
         obs_viz, _ = vis_env.reset(seed=config_dict["SEED"])
         print(obs_viz)
-        obs_viz_norm_flat = normalize_observation_ocatari(obs_viz).reshape(1, -1)
+        # obs_viz_norm_flat = normalize_observation_ocatari(obs_viz).reshape(1, -1)
         current_frame = vis_env.render()
     else:
         print("Resetting environment...")
@@ -484,7 +434,7 @@ def visualize_agent(agent_path: str, config_dict: Dict[str, Any], num_episodes: 
         # Step environment
         if env_type == "ocatari":
             next_obs_viz, reward_viz, terminated, truncated, _ = vis_env.step(int(action_viz[0]))
-            next_obs_viz_norm_flat = normalize_observation_ocatari(next_obs_viz).reshape(1, -1)
+            # next_obs_viz_norm_flat = normalize_observation_ocatari(next_obs_viz).reshape(1, -1)
             done_viz = terminated or truncated
             current_frame = vis_env.render()
             # Convert frame to pygame surface and display
@@ -530,7 +480,7 @@ def visualize_agent(agent_path: str, config_dict: Dict[str, Any], num_episodes: 
             
             if env_type == "ocatari":
                 obs_viz, _ = vis_env.reset(seed=config_dict["SEED"] + episode_count)
-                obs_viz_norm_flat = normalize_observation_ocatari(obs_viz).reshape(1, -1)
+                # obs_viz_norm_flat = normalize_observation_ocatari(obs_viz).reshape(1, -1)
                 current_frame = vis_env.render()
             else:
                 vis_reset_key, agent_key = jax.random.split(agent_key)
@@ -567,7 +517,7 @@ def main():
         print(f"--- Starting PPO (Distrax base) Agent Training ({current_config['ENV_TYPE']}) ---")
         print(f"Configuration: {current_config}")
         
-        trained_ppo_state_obj, ppo_results_dir, training_metrics = train_ppo_agent_ocatari(current_config)
+        # trained_ppo_state_obj, ppo_results_dir, training_metrics = train_ppo_agent_ocatari(current_config)
         
         plots_path = os.path.join(ppo_results_dir, "training_plots_ppo_distrax.png")
         plot_training_metrics(training_metrics, plots_path, current_config['ENV_NAME_OCATARI'])
