@@ -21,16 +21,39 @@ import jaxatari.spaces as spaces
 
 
 def normalize_observation_jaxatari(obs: jnp.ndarray, obs_space: spaces.Space) -> jnp.ndarray:
-    # assuming the obs space is flattened at this point, get the max values for each feature
-    max_values = obs_space.high.flatten()
-    min_values = obs_space.low.flatten()
+    """Normalize observations for JAXAtari.
+
+    - If using pixel observations (uint8 Box 0..255), scale to [-1, 1].
+    - Otherwise, apply per-feature min-max scaling to [-1, 1] (for object-centric).
+    Works with batched tensors as well (leading batch dim supported).
+    """
+    # Detect pixel observation space
+    try:
+        is_pixel = (
+            getattr(obs_space, "dtype", None) is not None
+            and obs_space.dtype == np.uint8
+            and np.all(np.asarray(obs_space.low) == 0)
+            and np.all(np.asarray(obs_space.high) == 255)
+        )
+    except Exception:
+        is_pixel = False
+
+    if is_pixel:
+        # obs can be (B, H, W, C) or (H, W, C); scale to [-1, 1]
+        obs_f = obs.astype(jnp.float32)
+        return obs_f / 127.5 - 1.0
+
+    # Default: per-feature min/max scaling (expects flattened features per frame)
+    max_values = jnp.asarray(obs_space.high).flatten()
+    min_values = jnp.asarray(obs_space.low).flatten()
 
     num_features_per_frame = len(max_values)
-    num_frames = obs.shape[-1] // num_features_per_frame
+    # Support batched obs; last dim must be frames*features
+    features_total = obs.shape[-1]
+    num_frames = features_total // num_features_per_frame
     max_values = jnp.tile(max_values, num_frames)
     min_values = jnp.tile(min_values, num_frames)
-
-    return 2* ((obs - min_values)/(max_values-min_values)) - 1.0
+    return 2 * ((obs - min_values) / (max_values - min_values)) - 1.0
 
 
 def env_step(env_step_fn, state, action, agent_key):
@@ -40,7 +63,7 @@ def env_step(env_step_fn, state, action, agent_key):
 
 def collect_rollout_step_vmapped(
     train_state,
-    current_obs_batched: jnp.ndarray,  # Already normalized and flat (num_envs, obs_dim)
+    current_obs_batched: jnp.ndarray,  # Already normalized (num_envs, ...)
     current_env_states_batched: Any,  # A PyTree of batched environment states
     agent_key: jnp.ndarray,  # A single key, will be split for vmap
     representative_env_step_fn: Callable,  # Single step function to vmap over
@@ -69,15 +92,11 @@ def collect_rollout_step_vmapped(
     next_raw_obs_batched, next_env_states_batched, rewards_batched, dones_batched, _ = \
         vmapped_step_fn(current_env_states_batched, actions.astype(jnp.int32))
 
-    # 3. Normalize observations
+    # 3. Normalize observations, keep image shape when using pixels
     next_obs_norm_batched = normalize_observation_jaxatari(next_raw_obs_batched, obs_space)
-    # Ensure it's (num_envs, features_flat_after_norm)
-    if next_obs_norm_batched.ndim == 1 and num_envs == 1:  # Special case for num_envs=1
-        next_obs_norm_batched = next_obs_norm_batched.reshape(1, -1)
-    elif next_obs_norm_batched.ndim == 2:  # Expected case (num_envs, features)
-        pass
-    else:  # Potentially (num_envs, H, W, C*F) if not flattened before normalization
-        next_obs_norm_batched = next_obs_norm_batched.reshape(num_envs, -1)
+    # Ensure leading batch dimension exists
+    if next_obs_norm_batched.ndim == 3 and num_envs == 1:
+        next_obs_norm_batched = next_obs_norm_batched[None, ...]
 
     return (
         next_obs_norm_batched,
@@ -93,7 +112,7 @@ def collect_rollout_step_vmapped(
 # Create a JIT-compiled version with static arguments
 collect_rollout_step_vmapped_jit = jax.jit(
     collect_rollout_step_vmapped,
-    static_argnums=(4, 5, 6)  # Only mark representative_env_step_fn and num_envs as static
+    static_argnums=(4, 5, 6)  # representative_env_step_fn, num_envs, obs_space are static
 )
 
 jax.jit
@@ -205,9 +224,14 @@ def train_ppo_with_jaxatari(config: Dict[str, Any]):
     envs = []
     for i in range(config["NUM_ENVS"]):
         env = jaxatari.make(game_name)
-        env: AtariWrapper = AtariWrapper(env, sticky_actions=True, frame_stack_size=buffer_window, frame_skip=config["FRAMESKIP"]) # get the atari wrapper to handle things like frame stacking, sticky actions, etc.
-        env: PixelObsWrapper = PixelObsWrapper(env) # use the pixel observation wrapper to only return pixel observations
-        env: FlattenObservationWrapper = FlattenObservationWrapper(env) # flatten the pixel observation to a single vector
+        env: AtariWrapper = AtariWrapper(
+            env,
+            sticky_actions=True,
+            frame_stack_size=buffer_window,
+            frame_skip=config["FRAMESKIP"],
+            episodic_life=config.get("EPISODIC_LIFE_TRAIN", False),
+        )
+        env: PixelObsWrapper = PixelObsWrapper(env)  # pixel observations (H, W, C*stack)
         envs.append(env)
 
     # We will use envs[0].step as the representative_env_step_fn
@@ -226,8 +250,8 @@ def train_ppo_with_jaxatari(config: Dict[str, Any]):
         obs_list.append(obs)
         states_list_py.append(curr_state)
 
-    current_raw_obs_stacked = jnp.stack(obs_list)  # (num_envs, *raw_obs_shape)
-    obs_shape_flat = current_raw_obs_stacked.shape[1:]  # Shape of one flattened raw observation
+    current_raw_obs_stacked = jnp.stack(obs_list)  # (num_envs, H, W, C*stack) for pixels
+    obs_shape = current_raw_obs_stacked.shape[1:]
 
     # Get the base environment directly TODO: maybe pass the action space through as well?
     possible_actions = envs[0]._env.action_space()
@@ -236,14 +260,14 @@ def train_ppo_with_jaxatari(config: Dict[str, Any]):
     print(f"Possible actions: {possible_actions}")
 
     agent_key, init_key = jax.random.split(main_rng)
-    train_state = create_ppo_train_state(init_key, config, obs_shape_flat, possible_actions.n)
+    train_state = create_ppo_train_state(init_key, config, obs_shape, possible_actions.n)
 
-    # Initial normalization and state batching
-    current_obs_stacked_norm_flat = normalize_observation_jaxatari(current_raw_obs_stacked, obs_space).reshape(config["NUM_ENVS"], -1)
+    # Initial normalization and state batching (keep image shape)
+    current_obs_stacked_norm = normalize_observation_jaxatari(current_raw_obs_stacked, obs_space)
     # Batch the list of PyTree states into a single PyTree with leading batch dimension
     current_batched_env_states = jax.tree_util.tree_map(lambda *xs: jnp.stack(xs, axis=0), *states_list_py)
 
-    rollout_obs_flat = jnp.zeros((config["NUM_STEPS"], config["NUM_ENVS"]) + obs_shape_flat, dtype=jnp.float32)
+    rollout_obs = jnp.zeros((config["NUM_STEPS"], config["NUM_ENVS"]) + obs_shape, dtype=jnp.float32)
     rollout_actions = jnp.zeros((config["NUM_STEPS"], config["NUM_ENVS"]), dtype=jnp.int32)
     rollout_log_probs = jnp.zeros((config["NUM_STEPS"], config["NUM_ENVS"]), dtype=jnp.float32)
     rollout_rewards = jnp.zeros((config["NUM_STEPS"], config["NUM_ENVS"]), dtype=jnp.float32)
@@ -275,7 +299,7 @@ def train_ppo_with_jaxatari(config: Dict[str, Any]):
             # Use JIT-compiled rollout collection with vmapped step function
             next_obs_norm, next_batched_env_states, actions, log_probs, rewards, dones, value = collect_rollout_step_vmapped_jit(
                 train_state,
-                current_obs_stacked_norm_flat,  # Already normalized
+                current_obs_stacked_norm,  # Already normalized
                 current_batched_env_states,     # Batched PyTree of env states
                 rollout_sample_key,             # Key for this step
                 representative_env_step_fn,     # Single step function to vmap over
@@ -302,7 +326,7 @@ def train_ppo_with_jaxatari(config: Dict[str, Any]):
                     reset_key, agent_key = jax.random.split(agent_key)
                     new_obs_done, new_state_done = envs[i].reset(reset_key)
                     # Update the corresponding slices in next_obs_norm and next_batched_env_states
-                    next_obs_norm = next_obs_norm.at[i].set(normalize_observation_jaxatari(new_obs_done, obs_space).flatten())
+                    next_obs_norm = next_obs_norm.at[i].set(normalize_observation_jaxatari(new_obs_done, obs_space))
                     # Update the batched state PyTree
                     next_batched_env_states = jax.tree_util.tree_map(
                         lambda leaf, new_state: leaf.at[i].set(new_state),
@@ -314,13 +338,14 @@ def train_ppo_with_jaxatari(config: Dict[str, Any]):
             rollout_rewards_sum += jnp.sum(rewards).item()
             rollout_rewards_count += config["NUM_ENVS"]
 
-            rollout_obs_flat = rollout_obs_flat.at[step_idx].set(current_obs_stacked_norm_flat)
+            rollout_obs = rollout_obs.at[step_idx].set(current_obs_stacked_norm)
             rollout_actions = rollout_actions.at[step_idx].set(actions)
             rollout_log_probs = rollout_log_probs.at[step_idx].set(log_probs)
             rollout_rewards = rollout_rewards.at[step_idx].set(rewards)
             rollout_dones = rollout_dones.at[step_idx].set(dones)
+            rollout_values = rollout_values.at[step_idx].set(value)
             
-            current_obs_stacked_norm_flat = next_obs_norm
+            current_obs_stacked_norm = next_obs_norm
             current_batched_env_states = next_batched_env_states
 
             rollout_pbar.update(1)
@@ -332,8 +357,8 @@ def train_ppo_with_jaxatari(config: Dict[str, Any]):
         rollout_pbar.close()
 
         # Get final value for advantage calculation
-        _, last_val = train_state.apply_fn({'params': train_state.params}, current_obs_stacked_norm_flat)
-        
+        _, last_val = train_state.apply_fn({'params': train_state.params}, current_obs_stacked_norm)
+
         # Use JIT-compiled advantage calculation
         advantages, returns = compute_advantages(
             rollout_rewards,
@@ -345,10 +370,10 @@ def train_ppo_with_jaxatari(config: Dict[str, Any]):
             config["GAE_LAMBDA"]
         )
 
-        b_obs = rollout_obs_flat.reshape((-1,) + obs_shape_flat)
+        b_obs = rollout_obs.reshape((-1,) + obs_shape)
         b_actions = rollout_actions.reshape(-1)
         b_log_probs_old = rollout_log_probs.reshape(-1)
-        b_values_old = rollout_values.reshape(-1) 
+        b_values_old = rollout_values.reshape(-1)
         b_advantages = advantages.reshape(-1)
         b_returns = returns.reshape(-1)
 

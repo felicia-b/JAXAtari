@@ -32,38 +32,64 @@ class ActorCritic(nn.Module):
             actor_logits_kernel_init_fn = variance_scaling(0.01, 'fan_in', 'normal')
             critic_value_kernel_init_fn = variance_scaling(1.0, 'fan_in', 'normal')
 
+        # Ensure batch dimension exists
         if x.ndim == 1:
             x = x[None, :]
-        elif x.ndim > 2:
-            x = x.reshape((x.shape[0], -1))
 
-        # Actor Stream
-        actor_hidden = nn.Dense(
-            128, kernel_init=hidden_kernel_init_fn, bias_init=constant(0.0)
-        )(x)
-        actor_hidden = activation_fn(actor_hidden)
-        actor_hidden = nn.Dense(
-            128, kernel_init=hidden_kernel_init_fn, bias_init=constant(0.0)
-        )(actor_hidden)
-        actor_hidden = activation_fn(actor_hidden)
-        actor_logits = nn.Dense(
-            self.action_dim, kernel_init=actor_logits_kernel_init_fn, bias_init=constant(0.0)
-        )(actor_hidden)
-        pi = distrax.Categorical(logits=actor_logits)
+        if x.ndim > 2:
+            # CNN torso for pixel inputs (NHWC)
+            if x.ndim == 3:
+                x = x[None, ...]
+            h = nn.Conv(features=32, kernel_size=(8, 8), strides=(4, 4),
+                        kernel_init=hidden_kernel_init_fn, padding='VALID')(x)
+            h = activation_fn(h)
+            h = nn.Conv(features=64, kernel_size=(4, 4), strides=(2, 2),
+                        kernel_init=hidden_kernel_init_fn, padding='VALID')(h)
+            h = activation_fn(h)
+            h = nn.Conv(features=64, kernel_size=(3, 3), strides=(1, 1),
+                        kernel_init=hidden_kernel_init_fn, padding='VALID')(h)
+            h = activation_fn(h)
+            h = h.reshape((h.shape[0], -1))
 
-        # Critic Stream
-        critic_hidden = nn.Dense(
-            128, kernel_init=hidden_kernel_init_fn, bias_init=constant(0.0)
-        )(x)
-        critic_hidden = activation_fn(critic_hidden)
-        critic_hidden = nn.Dense(
-            128, kernel_init=hidden_kernel_init_fn, bias_init=constant(0.0)
-        )(critic_hidden)
-        critic_hidden = activation_fn(critic_hidden)
-        critic_value = nn.Dense(1, kernel_init=critic_value_kernel_init_fn, bias_init=constant(0.0))(
-            critic_hidden
-        )
-        return pi, jnp.squeeze(critic_value, axis=-1)
+            # Separate heads (single hidden layer 512 each)
+            actor_hidden = nn.Dense(512, kernel_init=hidden_kernel_init_fn, bias_init=constant(0.0))(h)
+            actor_hidden = activation_fn(actor_hidden)
+            actor_logits = nn.Dense(self.action_dim, kernel_init=actor_logits_kernel_init_fn, bias_init=constant(0.0))(actor_hidden)
+            pi = distrax.Categorical(logits=actor_logits)
+
+            critic_hidden = nn.Dense(512, kernel_init=hidden_kernel_init_fn, bias_init=constant(0.0))(h)
+            critic_hidden = activation_fn(critic_hidden)
+            critic_value = nn.Dense(1, kernel_init=critic_value_kernel_init_fn, bias_init=constant(0.0))(critic_hidden)
+            return pi, jnp.squeeze(critic_value, axis=-1)
+        else:
+            # MLP path for flat features (object-centric)
+            # Actor Stream
+            actor_hidden = nn.Dense(
+                128, kernel_init=hidden_kernel_init_fn, bias_init=constant(0.0)
+            )(x)
+            actor_hidden = activation_fn(actor_hidden)
+            actor_hidden = nn.Dense(
+                128, kernel_init=hidden_kernel_init_fn, bias_init=constant(0.0)
+            )(actor_hidden)
+            actor_hidden = activation_fn(actor_hidden)
+            actor_logits = nn.Dense(
+                self.action_dim, kernel_init=actor_logits_kernel_init_fn, bias_init=constant(0.0)
+            )(actor_hidden)
+            pi = distrax.Categorical(logits=actor_logits)
+
+            # Critic Stream
+            critic_hidden = nn.Dense(
+                128, kernel_init=hidden_kernel_init_fn, bias_init=constant(0.0)
+            )(x)
+            critic_hidden = activation_fn(critic_hidden)
+            critic_hidden = nn.Dense(
+                128, kernel_init=hidden_kernel_init_fn, bias_init=constant(0.0)
+            )(critic_hidden)
+            critic_hidden = activation_fn(critic_hidden)
+            critic_value = nn.Dense(1, kernel_init=critic_value_kernel_init_fn, bias_init=constant(0.0))(
+                critic_hidden
+            )
+            return pi, jnp.squeeze(critic_value, axis=-1)
 
 class Transition(NamedTuple):
     done: jnp.ndarray 

@@ -58,7 +58,7 @@ ppo_config_distrax = {
     "ENV_NAME_OCATARI": "Amidar", # Specific key for OCAtari env name
     "ENV_NAME_JAXATARI": "amidar", # Specific key for JAXAtari env name
     "ENV_TYPE": "jaxatari", # Can be "ocatari" or "jaxatari"
-    "TOTAL_TIMESTEPS": 1_000_000,
+    "TOTAL_TIMESTEPS": 20_000_000,
     "TOTAL_TIMESTEPS_PER_EPOCH": 10_000,
     "LR": 5e-4,               # Learning rate
     "NUM_ENVS": 128,              # Number of parallel environments
