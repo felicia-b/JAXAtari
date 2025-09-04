@@ -15,7 +15,7 @@ import pygame
 from functools import partial
 
 import jaxatari
-from jaxatari.wrappers import AtariWrapper, FlattenObservationWrapper, ObjectCentricWrapper, PixelAndObjectCentricWrapper
+from jaxatari.wrappers import AtariWrapper, FlattenObservationWrapper, ObjectCentricWrapper, PixelAndObjectCentricWrapper, PixelObsWrapper
 import jaxatari.games.jax_amidar as jax_amidar
 import jaxatari.spaces as spaces
 
@@ -206,8 +206,8 @@ def train_ppo_with_jaxatari(config: Dict[str, Any]):
     for i in range(config["NUM_ENVS"]):
         env = jaxatari.make(game_name)
         env: AtariWrapper = AtariWrapper(env, sticky_actions=True, frame_stack_size=buffer_window, frame_skip=config["FRAMESKIP"]) # get the atari wrapper to handle things like frame stacking, sticky actions, etc.
-        env: ObjectCentricWrapper = ObjectCentricWrapper(env) # use the object centric wrapper to only return object centric observations
-        env: FlattenObservationWrapper = FlattenObservationWrapper(env) # flatten the object centric observation to a single vector
+        env: PixelObsWrapper = PixelObsWrapper(env) # use the pixel observation wrapper to only return pixel observations
+        env: FlattenObservationWrapper = FlattenObservationWrapper(env) # flatten the pixel observation to a single vector
         envs.append(env)
 
     # We will use envs[0].step as the representative_env_step_fn
