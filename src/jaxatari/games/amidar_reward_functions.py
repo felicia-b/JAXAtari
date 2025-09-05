@@ -20,4 +20,4 @@ def env_reward(prev_state: AmidarState, state: AmidarState) -> float:
     prev_state = unpack(prev_state)
     state = unpack(state)
     # Compute the environment reward based on the previous and current state
-    return JaxAmidar()._get_reward(prev_state, state)
+    return JaxAmidar()._get_env_reward(prev_state, state)
