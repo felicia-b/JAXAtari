@@ -272,7 +272,7 @@ def make_train(config):
             # env = ObjectCentricWrapper(env)
             env = PixelObsWrapper(env)
             env = FlattenObservationWrapper(env)
-            env = NormalizeObservationWrapper(env)
+            # env = NormalizeObservationWrapper(env)
             env = MultiRewardLogWrapper(env)
             return env
         env = create_env(True)
