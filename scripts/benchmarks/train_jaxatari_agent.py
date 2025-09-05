@@ -56,6 +56,24 @@ def normalize_observation_jaxatari(obs: jnp.ndarray, obs_space: spaces.Space) ->
     return 2 * ((obs - min_values) / (max_values - min_values)) - 1.0
 
 
+def stack_to_channels_last(obs: jnp.ndarray) -> jnp.ndarray:
+    """Convert (stack, H, W, C) or (N, stack, H, W, C) -> (H, W, C*stack) or (N, H, W, C*stack).
+
+    If obs is already (H, W, C) or (N, H, W, C), returns it unchanged.
+    """
+    if obs.ndim == 5:
+        # (N, S, H, W, C) -> (N, H, W, C*S)
+        n, s, h, w, c = obs.shape
+        obs_chlast = jnp.transpose(obs, (0, 2, 3, 4, 1))  # (N, H, W, C, S)
+        return obs_chlast.reshape((n, h, w, c * s))
+    if obs.ndim == 4:
+        # (S, H, W, C) -> (H, W, C*S)
+        s, h, w, c = obs.shape
+        obs_chlast = jnp.transpose(obs, (1, 2, 3, 0))  # (H, W, C, S)
+        return obs_chlast.reshape((h, w, c * s))
+    return obs
+
+
 def env_step(env_step_fn, state, action, agent_key):
     """Single environment step function (helper, not directly vmapped anymore)."""
     next_obs, curr_state, reward, terminated, _ = env_step_fn(agent_key, state, int(action))
@@ -63,13 +81,13 @@ def env_step(env_step_fn, state, action, agent_key):
 
 def collect_rollout_step_vmapped(
     train_state,
-    current_obs_batched: jnp.ndarray,  # Already normalized (num_envs, ...)
+    current_obs_batched: jnp.ndarray,  # Already normalized (num_envs, H, W, C_total)
     current_env_states_batched: Any,  # A PyTree of batched environment states
     agent_key: jnp.ndarray,  # A single key, will be split for vmap
     representative_env_step_fn: Callable,  # Single step function to vmap over
     num_envs: int,
     obs_space: spaces.Space
-) -> Tuple[jnp.ndarray, Any, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+) -> Tuple[jnp.ndarray, jnp.ndarray, Any, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Function to collect a single step of rollout data using jax.vmap for env steps."""
     # 1. Get actions and values from the policy
     pi, value = train_state.apply_fn({'params': train_state.params}, current_obs_batched)
@@ -92,13 +110,15 @@ def collect_rollout_step_vmapped(
     next_raw_obs_batched, next_env_states_batched, rewards_batched, dones_batched, _ = \
         vmapped_step_fn(current_env_states_batched, actions.astype(jnp.int32))
 
-    # 3. Normalize observations, keep image shape when using pixels
-    next_obs_norm_batched = normalize_observation_jaxatari(next_raw_obs_batched, obs_space)
+    # 3. Convert stacked frames to channels-last and normalize for next step
+    next_raw_obs_chlast = stack_to_channels_last(next_raw_obs_batched)  # (num_envs, H, W, C_total)
+    next_obs_norm_batched = normalize_observation_jaxatari(next_raw_obs_chlast, obs_space)
     # Ensure leading batch dimension exists
     if next_obs_norm_batched.ndim == 3 and num_envs == 1:
         next_obs_norm_batched = next_obs_norm_batched[None, ...]
 
     return (
+        next_raw_obs_chlast,
         next_obs_norm_batched,
         next_env_states_batched,
         actions,
@@ -231,7 +251,7 @@ def train_ppo_with_jaxatari(config: Dict[str, Any]):
             frame_skip=config["FRAMESKIP"],
             episodic_life=config.get("EPISODIC_LIFE_TRAIN", False),
         )
-        env: PixelObsWrapper = PixelObsWrapper(env)  # pixel observations (H, W, C*stack)
+        env: PixelObsWrapper = PixelObsWrapper(env)  # pixel observations (stack, H, W, C)
         envs.append(env)
 
     # We will use envs[0].step as the representative_env_step_fn
@@ -250,8 +270,10 @@ def train_ppo_with_jaxatari(config: Dict[str, Any]):
         obs_list.append(obs)
         states_list_py.append(curr_state)
 
-    current_raw_obs_stacked = jnp.stack(obs_list)  # (num_envs, H, W, C*stack) for pixels
-    obs_shape = current_raw_obs_stacked.shape[1:]
+    # (num_envs, stack, H, W, C) -> (num_envs, H, W, C_total)
+    current_raw_obs_stacked = jnp.stack(obs_list)  # (num_envs, stack, H, W, C)
+    current_raw_obs_chlast = stack_to_channels_last(current_raw_obs_stacked)
+    obs_shape = current_raw_obs_chlast.shape[1:]
 
     # Get the base environment directly TODO: maybe pass the action space through as well?
     possible_actions = envs[0]._env.action_space()
@@ -263,11 +285,12 @@ def train_ppo_with_jaxatari(config: Dict[str, Any]):
     train_state = create_ppo_train_state(init_key, config, obs_shape, possible_actions.n)
 
     # Initial normalization and state batching (keep image shape)
-    current_obs_stacked_norm = normalize_observation_jaxatari(current_raw_obs_stacked, obs_space)
+    current_obs_stacked_norm = normalize_observation_jaxatari(current_raw_obs_chlast, obs_space)
     # Batch the list of PyTree states into a single PyTree with leading batch dimension
     current_batched_env_states = jax.tree_util.tree_map(lambda *xs: jnp.stack(xs, axis=0), *states_list_py)
 
-    rollout_obs = jnp.zeros((config["NUM_STEPS"], config["NUM_ENVS"]) + obs_shape, dtype=jnp.float32)
+    # Store raw observations as uint8 to save memory; normalize on-the-fly for training
+    rollout_obs = jnp.zeros((config["NUM_STEPS"], config["NUM_ENVS"]) + obs_shape, dtype=jnp.uint8)
     rollout_actions = jnp.zeros((config["NUM_STEPS"], config["NUM_ENVS"]), dtype=jnp.int32)
     rollout_log_probs = jnp.zeros((config["NUM_STEPS"], config["NUM_ENVS"]), dtype=jnp.float32)
     rollout_rewards = jnp.zeros((config["NUM_STEPS"], config["NUM_ENVS"]), dtype=jnp.float32)
@@ -297,7 +320,7 @@ def train_ppo_with_jaxatari(config: Dict[str, Any]):
             total_env_steps_so_far = (update_idx - 1) * config["NUM_STEPS"] * config["NUM_ENVS"] + step_idx * config["NUM_ENVS"]
 
             # Use JIT-compiled rollout collection with vmapped step function
-            next_obs_norm, next_batched_env_states, actions, log_probs, rewards, dones, value = collect_rollout_step_vmapped_jit(
+            next_raw_obs_chlast, next_obs_norm, next_batched_env_states, actions, log_probs, rewards, dones, value = collect_rollout_step_vmapped_jit(
                 train_state,
                 current_obs_stacked_norm,  # Already normalized
                 current_batched_env_states,     # Batched PyTree of env states
@@ -324,9 +347,11 @@ def train_ppo_with_jaxatari(config: Dict[str, Any]):
                     # Important: If an env is done, its state needs to be reset
                     # Get reset_obs and reset_state for done environments
                     reset_key, agent_key = jax.random.split(agent_key)
-                    new_obs_done, new_state_done = envs[i].reset(reset_key)
-                    # Update the corresponding slices in next_obs_norm and next_batched_env_states
-                    next_obs_norm = next_obs_norm.at[i].set(normalize_observation_jaxatari(new_obs_done, obs_space))
+                    new_obs_done, new_state_done = envs[i].reset(reset_key)  # (stack, H, W, C)
+                    # Convert and set raw + normalized
+                    new_obs_done_chlast = stack_to_channels_last(new_obs_done)
+                    next_raw_obs_chlast = next_raw_obs_chlast.at[i].set(new_obs_done_chlast)
+                    next_obs_norm = next_obs_norm.at[i].set(normalize_observation_jaxatari(new_obs_done_chlast, obs_space))
                     # Update the batched state PyTree
                     next_batched_env_states = jax.tree_util.tree_map(
                         lambda leaf, new_state: leaf.at[i].set(new_state),
@@ -338,13 +363,16 @@ def train_ppo_with_jaxatari(config: Dict[str, Any]):
             rollout_rewards_sum += jnp.sum(rewards).item()
             rollout_rewards_count += config["NUM_ENVS"]
 
-            rollout_obs = rollout_obs.at[step_idx].set(current_obs_stacked_norm)
+            # Store raw uint8 obs for this step
+            rollout_obs = rollout_obs.at[step_idx].set(current_raw_obs_chlast)
             rollout_actions = rollout_actions.at[step_idx].set(actions)
             rollout_log_probs = rollout_log_probs.at[step_idx].set(log_probs)
             rollout_rewards = rollout_rewards.at[step_idx].set(rewards)
             rollout_dones = rollout_dones.at[step_idx].set(dones)
             rollout_values = rollout_values.at[step_idx].set(value)
             
+            # Advance to next step
+            current_raw_obs_chlast = next_raw_obs_chlast
             current_obs_stacked_norm = next_obs_norm
             current_batched_env_states = next_batched_env_states
 
@@ -370,7 +398,9 @@ def train_ppo_with_jaxatari(config: Dict[str, Any]):
             config["GAE_LAMBDA"]
         )
 
+        # Convert stored uint8 obs to normalized float32 just-in-time for training
         b_obs = rollout_obs.reshape((-1,) + obs_shape)
+        b_obs = normalize_observation_jaxatari(b_obs, obs_space)
         b_actions = rollout_actions.reshape(-1)
         b_log_probs_old = rollout_log_probs.reshape(-1)
         b_values_old = rollout_values.reshape(-1)
