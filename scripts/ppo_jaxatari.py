@@ -276,7 +276,7 @@ def make_train(config):
             env = MultiRewardLogWrapper(env)
             return env
         env = create_env(True)
-        test_env = create_env(False, False)
+        test_env = create_env(False)
         test_env_modif = create_env(False, True)
         renderer = AmidarRenderer()
 
