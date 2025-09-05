@@ -277,7 +277,7 @@ def make_train(config):
             return env
         env = create_env(True)
         test_env = create_env(False)
-        test_env_modif = create_env(False, True)
+        test_env_modif = create_env(False)
         renderer = AmidarRenderer()
 
     vmap_reset = lambda n_envs: lambda rng: jax.vmap(env.reset)(
