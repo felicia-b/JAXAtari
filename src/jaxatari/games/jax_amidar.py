@@ -747,6 +747,10 @@ class JaxAmidar(JaxEnvironment[AmidarState, AmidarObservation, AmidarInfo, Amida
         return state.lives <= 0
     
     @partial(jax.jit, static_argnums=(0,))
+    def _get_reward(self, previous_state: AmidarState, state: AmidarState):
+        return self._get_env_reward(previous_state, state)
+
+    @partial(jax.jit, static_argnums=(0,))
     def _get_env_reward(self, previous_state: AmidarState, state: AmidarState):
         return state.score - previous_state.score
     
